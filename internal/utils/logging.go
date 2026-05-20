@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -19,19 +20,21 @@ func NewSessionToSlog() copilot.SessionEventHandler {
 
 	return func(event copilot.SessionEvent) {
 		switch event.Type {
-		case copilot.PendingMessagesModified, copilot.HookEnd, copilot.HookStart:
+		case copilot.SessionEventTypePendingMessagesModified,
+			copilot.SessionEventTypeHookEnd,
+			copilot.SessionEventTypeHookStart:
 			// we just drop these from logging, they're mostly noise, or have other events (like tool calls)
 			// that are more informative.
 			return
-		case copilot.ToolExecutionStart:
-			if event.Data.ToolName != nil && *event.Data.ToolName == "report_intent" && event.Data.ToolCallID != nil {
+		case copilot.SessionEventTypeToolExecutionStart:
+			if data, ok := event.Data.(*copilot.ToolExecutionStartData); ok && data.ToolName == "report_intent" {
 				// store this off, we'll ignore the complete event when it comes in as well.
-				intentCalls.Store(*event.Data.ToolCallID, true)
+				intentCalls.Store(data.ToolCallID, true)
 				return
 			}
-		case copilot.ToolExecutionComplete:
-			if event.Data.ToolCallID != nil &&
-				intentCalls.CompareAndDelete(*event.Data.ToolCallID, true) {
+		case copilot.SessionEventTypeToolExecutionComplete:
+			if data, ok := event.Data.(*copilot.ToolExecutionCompleteData); ok &&
+				intentCalls.CompareAndDelete(data.ToolCallID, true) {
 				return
 			}
 		}
@@ -52,53 +55,69 @@ func sessionToSlog(event copilot.SessionEvent) {
 		"type", event.Type,
 	}
 
-	attrs = appendIf(attrs, "reasoningText", event.Data.ReasoningText)
+	switch data := event.Data.(type) {
+	case *copilot.SessionStartData:
+		attrs = appendIf(attrs, "selectedModel", data.SelectedModel)
+		attrs = append(attrs, "producer", data.Producer)
+		attrs = append(attrs, "sessionID", data.SessionID)
 
-	// session starts
-	attrs = appendIf(attrs, "selectedModel", event.Data.SelectedModel)
-	attrs = appendIf(attrs, "producer", event.Data.Producer)
-	attrs = appendIf(attrs, "sessionID", event.Data.SessionID)
-
-	if event.Data.Context != nil {
-		cc := event.Data.Context.ContextClass
-		if cc != nil {
+		if data.Context != nil {
+			cc := data.Context
 			var ccAttrs []any
 
 			ccAttrs = appendIf(ccAttrs, "branch", cc.Branch)
 			ccAttrs = append(ccAttrs, "cwd", cc.Cwd)
-			ccAttrs = append(ccAttrs, "gitRoot", cc.GitRoot)
-			ccAttrs = append(ccAttrs, "repository", cc.Repository)
+			ccAttrs = appendIf(ccAttrs, "gitRoot", cc.GitRoot)
+			ccAttrs = appendIf(ccAttrs, "repository", cc.Repository)
 
 			attrs = append(attrs, slog.Group("context", ccAttrs...))
 		}
+	case *copilot.AssistantTurnStartData:
+		attrs = append(attrs, "turnID", data.TurnID)
+	case *copilot.AssistantMessageData:
+		attrs = append(attrs, "content", data.Content)
+		attrs = appendIf(attrs, "reasoningText", data.ReasoningText)
+	case *copilot.AssistantMessageDeltaData:
+		attrs = append(attrs, "deltaContent", data.DeltaContent)
+	case *copilot.AssistantReasoningData:
+		attrs = append(attrs, "content", data.Content)
+	case *copilot.AssistantReasoningDeltaData:
+		attrs = append(attrs, "deltaContent", data.DeltaContent)
+	case *copilot.UserMessageData:
+		attrs = append(attrs, "content", data.Content)
+	case *copilot.ToolExecutionStartData:
+		attrs = append(attrs, "toolName", data.ToolName, "toolCallID", data.ToolCallID)
+		attrs = appendMapOfStringAnyIf(attrs, data.Arguments, "arguments")
+	case *copilot.ToolExecutionCompleteData:
+		attrs = append(attrs, "toolCallID", data.ToolCallID, "success", data.Success)
+		if data.Result != nil {
+			var toolResultArgs []any
+			toolResultArgs = append(toolResultArgs, "content", data.Result.Content)
+			toolResultArgs = appendIf(toolResultArgs, "detailedContent", data.Result.DetailedContent)
+			attrs = append(attrs, slog.Group("toolResult", toolResultArgs...))
+		}
+		if data.Error != nil {
+			attrs = append(attrs, "message", data.Error.Message)
+		}
+	case *copilot.ToolExecutionPartialResultData:
+		attrs = append(attrs, "toolCallID", data.ToolCallID, "partialOutput", data.PartialOutput)
+	case *copilot.HookStartData:
+		attrs = append(attrs, "hookType", data.HookType)
+		attrs = appendMapOfStringAnyIf(attrs, data.Input, "input")
+	case *copilot.HookEndData:
+		attrs = append(attrs, "hookType", data.HookType, "success", data.Success)
+		if data.Error != nil {
+			attrs = append(attrs, "message", data.Error.Message)
+		}
+	case *copilot.SessionErrorData:
+		attrs = append(attrs, "message", data.Message)
+	case *copilot.SkillInvokedData:
+		attrs = append(attrs, "message", data.Name)
+	default:
+		if data != nil {
+			attrs = append(attrs, "data", fmt.Sprintf("%T", data))
+		}
 	}
-
-	// assistant.turn_start
-	attrs = appendIf(attrs, "turnID", event.Data.TurnID)
-
-	// tool calls
-	attrs = appendIf(attrs, "content", event.Data.Content)
-	attrs = appendIf(attrs, "deltaContent", event.Data.DeltaContent)
-	attrs = appendIf(attrs, "toolName", event.Data.ToolName)
-	attrs = appendIf(attrs, "toolCallID", event.Data.ToolCallID)
-
-	if event.Data.Result != nil {
-		tr := event.Data.Result
-
-		var toolResultArgs []any
-
-		toolResultArgs = appendIf(toolResultArgs, "content", tr.Content)
-		toolResultArgs = appendIf(toolResultArgs, "detailedContent", tr.DetailedContent)
-
-		attrs = append(attrs, slog.Group("toolResult", toolResultArgs...))
-	}
-
-	// tool call arguments
-	attrs = appendMapOfStringAnyIf(attrs, event.Data.Arguments, "arguments")
-
-	// hooks
-	attrs = appendIf(attrs, "hookType", event.Data.HookType)
-	attrs = appendMapOfStringAnyIf(attrs, event.Data.Input, "input")
 
 	slog.Debug("Event received", attrs...)
 }

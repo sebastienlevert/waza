@@ -17,7 +17,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4
 	github.com/azure/azure-dev/cli/azd v0.0.0-20260310201311-bf9ff08dc845
 	github.com/charmbracelet/huh v1.0.0
-	github.com/github/copilot-sdk/go v0.1.32
+	github.com/github/copilot-sdk/go v0.2.2
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/klauspost/compress v1.18.3
 	github.com/mattn/go-runewidth v0.0.21

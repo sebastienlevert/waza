@@ -112,10 +112,11 @@ type ExecutionResponse struct {
 func (r *ExecutionResponse) ExtractMessages() []string {
 	var messages []string
 	for _, evt := range r.Events {
-		if evt.Type == copilot.AssistantMessage {
-			if evt.Data.Content != nil {
-				messages = append(messages, *evt.Data.Content)
-			}
+		if evt.Type != copilot.SessionEventTypeAssistantMessage {
+			continue
+		}
+		if data, ok := evt.Data.(*copilot.AssistantMessageData); ok {
+			messages = append(messages, data.Content)
 		}
 	}
 	return messages

@@ -9,11 +9,12 @@ import (
 )
 
 // ToolCall represents a tool invocation
+// captured from tool.execution_* events.
 type ToolCall struct {
-	Name      string          `json:"name"`
-	Arguments ToolCallArgs    `json:"arguments,omitempty"`
-	Result    *copilot.Result `json:"result,omitempty"`
-	Success   bool            `json:"success"`
+	Name      string                                   `json:"name"`
+	Arguments ToolCallArgs                             `json:"arguments,omitempty"`
+	Result    *copilot.ToolExecutionCompleteDataResult `json:"result,omitempty"`
+	Success   bool                                     `json:"success"`
 }
 
 type ToolCallArgs struct {
@@ -29,11 +30,33 @@ type ToolCallArgs struct {
 	Skill string `json:"skill" mapstructure:"skill"`
 }
 
+type TranscriptEventData struct {
+	Content    *string                                  `json:"-"`
+	Message    *string                                  `json:"-"`
+	Arguments  any                                      `json:"-"`
+	Success    *bool                                    `json:"-"`
+	ToolCallID *string                                  `json:"-"`
+	ToolName   *string                                  `json:"-"`
+	Result     *copilot.ToolExecutionCompleteDataResult `json:"-"`
+}
+
 type TranscriptEvent struct {
-	copilot.SessionEvent `json:"-"`
+	SessionEvent copilot.SessionEvent     `json:"-"`
+	Type         copilot.SessionEventType `json:"-"`
+	Data         TranscriptEventData      `json:"-"`
+}
+
+func NewTranscriptEvent(event copilot.SessionEvent) TranscriptEvent {
+	return TranscriptEvent{
+		SessionEvent: event,
+		Type:         event.Type,
+		Data:         extractTranscriptEventData(event),
+	}
 }
 
 func (te TranscriptEvent) MarshalJSON() ([]byte, error) {
+	te = te.normalize()
+
 	v := struct {
 		Content *string                  `json:"content,omitempty"`
 		Type    copilot.SessionEventType `json:"type"`
@@ -41,19 +64,15 @@ func (te TranscriptEvent) MarshalJSON() ([]byte, error) {
 		Message *string `json:"message,omitempty"`
 
 		// tool call fields
-		Arguments  any             `json:"arguments,omitempty"`
-		Success    *bool           `json:"success,omitempty"`
-		ToolCallID *string         `json:"tool_call_id,omitempty"`
-		ToolName   *string         `json:"tool_name,omitempty"`
-		ToolResult *copilot.Result `json:"tool_result,omitempty"`
+		Arguments  any                                      `json:"arguments,omitempty"`
+		Success    *bool                                    `json:"success,omitempty"`
+		ToolCallID *string                                  `json:"tool_call_id,omitempty"`
+		ToolName   *string                                  `json:"tool_name,omitempty"`
+		ToolResult *copilot.ToolExecutionCompleteDataResult `json:"tool_result,omitempty"`
 	}{
-		Type: te.Type,
-
-		// response messages
-		Content: te.Data.Content,
-		Message: te.Data.Message,
-
-		// tool call related fields
+		Type:       te.Type,
+		Content:    te.Data.Content,
+		Message:    te.Data.Message,
 		ToolCallID: te.Data.ToolCallID,
 		ToolName:   te.Data.ToolName,
 		Arguments:  te.Data.Arguments,
@@ -66,14 +85,14 @@ func (te TranscriptEvent) MarshalJSON() ([]byte, error) {
 
 func (te *TranscriptEvent) UnmarshalJSON(data []byte) error {
 	var v struct {
-		Content    *string                  `json:"content,omitempty"`
-		Type       copilot.SessionEventType `json:"type"`
-		Message    *string                  `json:"message,omitempty"`
-		Arguments  any                      `json:"arguments,omitempty"`
-		Success    *bool                    `json:"success,omitempty"`
-		ToolCallID *string                  `json:"tool_call_id,omitempty"`
-		ToolName   *string                  `json:"tool_name,omitempty"`
-		ToolResult *copilot.Result          `json:"tool_result,omitempty"`
+		Content    *string                                  `json:"content,omitempty"`
+		Type       copilot.SessionEventType                 `json:"type"`
+		Message    *string                                  `json:"message,omitempty"`
+		Arguments  any                                      `json:"arguments,omitempty"`
+		Success    *bool                                    `json:"success,omitempty"`
+		ToolCallID *string                                  `json:"tool_call_id,omitempty"`
+		ToolName   *string                                  `json:"tool_name,omitempty"`
+		ToolResult *copilot.ToolExecutionCompleteDataResult `json:"tool_result,omitempty"`
 	}
 
 	if err := json.Unmarshal(data, &v); err != nil {
@@ -81,15 +100,138 @@ func (te *TranscriptEvent) UnmarshalJSON(data []byte) error {
 	}
 
 	te.Type = v.Type
-	te.Data.Content = v.Content
-	te.Data.Message = v.Message
-	te.Data.ToolCallID = v.ToolCallID
-	te.Data.ToolName = v.ToolName
-	te.Data.Arguments = v.Arguments
-	te.Data.Result = v.ToolResult
-	te.Data.Success = v.Success
+	te.Data = TranscriptEventData{
+		Content:    v.Content,
+		Message:    v.Message,
+		Arguments:  v.Arguments,
+		Success:    v.Success,
+		ToolCallID: v.ToolCallID,
+		ToolName:   v.ToolName,
+		Result:     v.ToolResult,
+	}
+	te.SessionEvent = buildSessionEvent(v.Type, te.Data)
 
 	return nil
+}
+
+func (te TranscriptEvent) normalize() TranscriptEvent {
+	if te.Type == "" {
+		te.Type = te.SessionEvent.Type
+	}
+	if transcriptEventDataIsZero(te.Data) {
+		te.Data = extractTranscriptEventData(te.SessionEvent)
+	}
+	if te.SessionEvent.Type == "" && te.Type != "" {
+		te.SessionEvent = buildSessionEvent(te.Type, te.Data)
+	}
+	return te
+}
+
+func transcriptEventDataIsZero(data TranscriptEventData) bool {
+	return data.Content == nil &&
+		data.Message == nil &&
+		data.Arguments == nil &&
+		data.Success == nil &&
+		data.ToolCallID == nil &&
+		data.ToolName == nil &&
+		data.Result == nil
+}
+
+func extractTranscriptEventData(event copilot.SessionEvent) TranscriptEventData {
+	var data TranscriptEventData
+
+	switch d := event.Data.(type) {
+	case *copilot.UserMessageData:
+		data.Content = ptr(d.Content)
+	case *copilot.AssistantMessageData:
+		data.Content = ptr(d.Content)
+	case *copilot.AssistantReasoningData:
+		data.Content = ptr(d.Content)
+	case *copilot.SessionErrorData:
+		data.Message = ptr(d.Message)
+	case *copilot.SessionInfoData:
+		data.Message = ptr(d.Message)
+	case *copilot.SessionWarningData:
+		data.Message = ptr(d.Message)
+	case *copilot.SkillInvokedData:
+		data.Message = ptr(d.Name)
+	case *copilot.ToolUserRequestedData:
+		data.Message = ptr(d.ToolName)
+		data.ToolCallID = ptr(d.ToolCallID)
+		data.ToolName = ptr(d.ToolName)
+		data.Arguments = d.Arguments
+	case *copilot.ToolExecutionStartData:
+		data.ToolCallID = ptr(d.ToolCallID)
+		data.ToolName = ptr(d.ToolName)
+		data.Arguments = d.Arguments
+	case *copilot.ToolExecutionCompleteData:
+		data.ToolCallID = ptr(d.ToolCallID)
+		data.Success = ptr(d.Success)
+		data.Result = d.Result
+		if d.Error != nil {
+			data.Message = ptr(d.Error.Message)
+		}
+	case *copilot.ToolExecutionPartialResultData:
+		data.ToolCallID = ptr(d.ToolCallID)
+		data.Message = ptr(d.PartialOutput)
+	case *copilot.HookEndData:
+		if d.Error != nil {
+			data.Message = ptr(d.Error.Message)
+		}
+	}
+
+	return data
+}
+
+func buildSessionEvent(eventType copilot.SessionEventType, data TranscriptEventData) copilot.SessionEvent {
+	event := copilot.SessionEvent{Type: eventType}
+
+	switch eventType {
+	case copilot.SessionEventTypeUserMessage:
+		if data.Content != nil {
+			event.Data = &copilot.UserMessageData{Content: *data.Content}
+		}
+	case copilot.SessionEventTypeAssistantMessage:
+		if data.Content != nil {
+			event.Data = &copilot.AssistantMessageData{Content: *data.Content}
+		}
+	case copilot.SessionEventTypeSessionError:
+		if data.Message != nil {
+			event.Data = &copilot.SessionErrorData{Message: *data.Message}
+		}
+	case copilot.SessionEventTypeSkillInvoked:
+		name := valueOr(data.Message, "")
+		path := ""
+		if data.ToolName != nil {
+			path = *data.ToolName
+		}
+		event.Data = &copilot.SkillInvokedData{Name: name, Path: path}
+	case copilot.SessionEventTypeToolUserRequested:
+		event.Data = &copilot.ToolUserRequestedData{
+			ToolCallID: valueOr(data.ToolCallID, ""),
+			ToolName:   valueOr(data.ToolName, ""),
+			Arguments:  data.Arguments,
+		}
+	case copilot.SessionEventTypeToolExecutionStart:
+		event.Data = &copilot.ToolExecutionStartData{
+			ToolCallID: valueOr(data.ToolCallID, ""),
+			ToolName:   valueOr(data.ToolName, ""),
+			Arguments:  data.Arguments,
+		}
+	case copilot.SessionEventTypeToolExecutionComplete:
+		event.Data = &copilot.ToolExecutionCompleteData{
+			ToolCallID: valueOr(data.ToolCallID, ""),
+			Success:    valueOr(data.Success, false),
+			Result:     data.Result,
+		}
+	case copilot.SessionEventTypeToolExecutionPartialResult:
+		event.Data = &copilot.ToolExecutionPartialResultData{
+			ToolCallID:    valueOr(data.ToolCallID, ""),
+			PartialOutput: valueOr(data.Message, ""),
+		}
+	}
+
+	return event
 }
 
 // FilterToolCalls goes through the list of session events and correlates tool starts
@@ -100,35 +242,35 @@ func FilterToolCalls(sessionEvents []copilot.SessionEvent) []ToolCall {
 
 	for _, evt := range sessionEvents {
 		switch evt.Type {
-		case copilot.ToolExecutionStart:
-			if evt.Data.ToolName == nil || evt.Data.ToolCallID == nil {
+		case copilot.SessionEventTypeToolExecutionStart:
+			startData, ok := evt.Data.(*copilot.ToolExecutionStartData)
+			if !ok || startData.ToolName == "" || startData.ToolCallID == "" {
 				continue
 			}
 
 			tc := &ToolCall{
-				Name: *evt.Data.ToolName,
+				Name: startData.ToolName,
 			}
 
-			if err := mapstructure.Decode(evt.Data.Arguments, &tc.Arguments); err != nil {
-				slog.Warn("tool argument format wasn't recognized", "error", err, "name", *evt.Data.ToolName, "args", evt.Data.Arguments)
+			if err := mapstructure.Decode(startData.Arguments, &tc.Arguments); err != nil {
+				slog.Warn("tool argument format wasn't recognized", "error", err, "name", startData.ToolName, "args", startData.Arguments)
 			}
 
-			toolCallsMap[*evt.Data.ToolCallID] = tc
-			toolCallIDs = append(toolCallIDs, *evt.Data.ToolCallID)
-		case copilot.ToolExecutionComplete, copilot.ToolExecutionPartialResult:
-			if evt.Data.ToolCallID == nil {
+			toolCallsMap[startData.ToolCallID] = tc
+			toolCallIDs = append(toolCallIDs, startData.ToolCallID)
+		case copilot.SessionEventTypeToolExecutionComplete:
+			completeData, ok := evt.Data.(*copilot.ToolExecutionCompleteData)
+			if !ok || completeData.ToolCallID == "" {
 				continue
 			}
-			tc := toolCallsMap[*evt.Data.ToolCallID]
+
+			tc := toolCallsMap[completeData.ToolCallID]
 			if tc == nil {
 				continue
 			}
 
-			if evt.Data.Success != nil {
-				tc.Success = *evt.Data.Success
-			}
-
-			tc.Result = evt.Data.Result
+			tc.Success = completeData.Success
+			tc.Result = completeData.Result
 		}
 	}
 
@@ -140,3 +282,16 @@ func FilterToolCalls(sessionEvents []copilot.SessionEvent) []ToolCall {
 
 	return toolCalls
 }
+
+func ptr[T any](v T) *T {
+	return &v
+}
+
+func valueOr[T any](v *T, fallback T) T {
+	if v != nil {
+		return *v
+	}
+	return fallback
+}
+
+

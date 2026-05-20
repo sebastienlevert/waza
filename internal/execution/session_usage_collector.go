@@ -40,11 +40,14 @@ func (s *SessionUsageCollector) On(event copilot.SessionEvent) {
 	defer s.mut.Unlock()
 
 	switch event.Type {
-	case copilot.AssistantTurnStart:
+	case copilot.SessionEventTypeAssistantTurnStart:
 		s.turns++
-	case copilot.AssistantUsage:
+	case copilot.SessionEventTypeAssistantUsage:
 		s.extractTurnUsage(event)
-	case copilot.SessionIdle, copilot.SessionShutdown, copilot.SessionError, copilot.SessionUsageInfo:
+	case copilot.SessionEventTypeSessionIdle,
+		copilot.SessionEventTypeSessionShutdown,
+		copilot.SessionEventTypeSessionError,
+		copilot.SessionEventTypeSessionUsageInfo:
 		s.extractSessionUsage(event)
 	}
 }
@@ -82,68 +85,75 @@ func (s *SessionUsageCollector) UsageStats() *models.UsageStats {
 // be okay because the data is cumulative; later events will have the same or higher
 // totals than earlier events.
 func (s *SessionUsageCollector) extractSessionUsage(event copilot.SessionEvent) {
-	if event.Data.TotalPremiumRequests != nil {
-		if s.sessionUsage == nil {
-			s.sessionUsage = &models.UsageStats{}
-		}
-		s.sessionUsage.PremiumRequests = *event.Data.TotalPremiumRequests
+	shutdown, ok := event.Data.(*copilot.SessionShutdownData)
+	if !ok {
+		return
 	}
 
-	if len(event.Data.ModelMetrics) > 0 {
-		if s.sessionUsage == nil {
-			s.sessionUsage = &models.UsageStats{}
-		}
-		s.sessionUsage.ModelMetrics = make(map[string]models.ModelUsage, len(event.Data.ModelMetrics))
-
-		totalIn, totalOut, totalCacheRead, totalCacheWrite := 0, 0, 0, 0
-		for name, mm := range event.Data.ModelMetrics {
-			mu := models.ModelUsage{
-				InputTokens:      int(mm.Usage.InputTokens),
-				OutputTokens:     int(mm.Usage.OutputTokens),
-				CacheReadTokens:  int(mm.Usage.CacheReadTokens),
-				CacheWriteTokens: int(mm.Usage.CacheWriteTokens),
-				RequestCount:     mm.Requests.Count,
-				RequestCost:      mm.Requests.Cost,
-			}
-			s.sessionUsage.ModelMetrics[name] = mu
-			totalIn += mu.InputTokens
-			totalOut += mu.OutputTokens
-			totalCacheRead += mu.CacheReadTokens
-			totalCacheWrite += mu.CacheWriteTokens
-		}
-
-		s.sessionUsage.InputTokens = totalIn
-		s.sessionUsage.OutputTokens = totalOut
-		s.sessionUsage.CacheReadTokens = totalCacheRead
-		s.sessionUsage.CacheWriteTokens = totalCacheWrite
+	if s.sessionUsage == nil {
+		s.sessionUsage = &models.UsageStats{}
 	}
+
+	s.sessionUsage.PremiumRequests = shutdown.TotalPremiumRequests
+
+	if len(shutdown.ModelMetrics) == 0 {
+		return
+	}
+
+	s.sessionUsage.ModelMetrics = make(map[string]models.ModelUsage, len(shutdown.ModelMetrics))
+
+	totalIn, totalOut, totalCacheRead, totalCacheWrite := 0, 0, 0, 0
+	for name, mm := range shutdown.ModelMetrics {
+		mu := models.ModelUsage{
+			InputTokens:      int(mm.Usage.InputTokens),
+			OutputTokens:     int(mm.Usage.OutputTokens),
+			CacheReadTokens:  int(mm.Usage.CacheReadTokens),
+			CacheWriteTokens: int(mm.Usage.CacheWriteTokens),
+			RequestCount:     mm.Requests.Count,
+			RequestCost:      mm.Requests.Cost,
+		}
+		s.sessionUsage.ModelMetrics[name] = mu
+		totalIn += mu.InputTokens
+		totalOut += mu.OutputTokens
+		totalCacheRead += mu.CacheReadTokens
+		totalCacheWrite += mu.CacheWriteTokens
+	}
+
+	s.sessionUsage.InputTokens = totalIn
+	s.sessionUsage.OutputTokens = totalOut
+	s.sessionUsage.CacheReadTokens = totalCacheRead
+	s.sessionUsage.CacheWriteTokens = totalCacheWrite
 }
 
 // extractTurnUsage captures per-turn usage from AssistantUsage events.
 // This data is only used when session-level data (ModelMetrics/TotalPremiumRequests)
 // is not available.
 func (s *SessionUsageCollector) extractTurnUsage(event copilot.SessionEvent) {
-	if event.Data.InputTokens == nil && event.Data.OutputTokens == nil &&
-		event.Data.CacheReadTokens == nil && event.Data.CacheWriteTokens == nil &&
-		event.Data.Cost == nil {
+	data, ok := event.Data.(*copilot.AssistantUsageData)
+	if !ok {
+		return
+	}
+	if data.InputTokens == nil && data.OutputTokens == nil &&
+		data.CacheReadTokens == nil && data.CacheWriteTokens == nil &&
+		data.Cost == nil {
 		return
 	}
 	if s.turnUsage == nil {
 		s.turnUsage = &models.UsageStats{}
 	}
-	if event.Data.InputTokens != nil {
-		s.turnUsage.InputTokens += int(*event.Data.InputTokens)
+	if data.InputTokens != nil {
+		s.turnUsage.InputTokens += int(*data.InputTokens)
 	}
-	if event.Data.OutputTokens != nil {
-		s.turnUsage.OutputTokens += int(*event.Data.OutputTokens)
+	if data.OutputTokens != nil {
+		s.turnUsage.OutputTokens += int(*data.OutputTokens)
 	}
-	if event.Data.CacheReadTokens != nil {
-		s.turnUsage.CacheReadTokens += int(*event.Data.CacheReadTokens)
+	if data.CacheReadTokens != nil {
+		s.turnUsage.CacheReadTokens += int(*data.CacheReadTokens)
 	}
-	if event.Data.CacheWriteTokens != nil {
-		s.turnUsage.CacheWriteTokens += int(*event.Data.CacheWriteTokens)
+	if data.CacheWriteTokens != nil {
+		s.turnUsage.CacheWriteTokens += int(*data.CacheWriteTokens)
 	}
-	if event.Data.Cost != nil {
-		s.turnUsage.PremiumRequests += *event.Data.Cost
+	if data.Cost != nil {
+		s.turnUsage.PremiumRequests += *data.Cost
 	}
 }

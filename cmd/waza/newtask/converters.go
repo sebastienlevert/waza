@@ -89,75 +89,78 @@ func CreateTestCaseFromCopilotLog(copilotLog string, options *CreateTestCaseFrom
 		}
 
 		switch e.Type {
-		case copilot.UserMessage:
-			if e.Data.Content != nil {
-				task.Stimulus.Message = *e.Data.Content
+		case copilot.SessionEventTypeUserMessage:
+			if data, ok := e.Data.(*copilot.UserMessageData); ok {
+				task.Stimulus.Message = data.Content
 			}
-		case copilot.ToolExecutionStart:
-			if e.Data.ToolCallID == nil {
+		case copilot.SessionEventTypeToolExecutionStart:
+			data, ok := e.Data.(*copilot.ToolExecutionStartData)
+			if !ok || data.ToolCallID == "" {
 				continue
 			}
 
-			toolsInOrder = append(toolsInOrder, *e.Data.ToolCallID)
+			toolsInOrder = append(toolsInOrder, data.ToolCallID)
 
 			var ta *toolArgs
 
-			if e.Data.Arguments != nil {
-				if err := mapstructure.Decode(e.Data.Arguments, &ta); err != nil {
+			if data.Arguments != nil {
+				if err := mapstructure.Decode(data.Arguments, &ta); err != nil {
 					return nil, err
 				}
 			} else {
 				ta = &toolArgs{}
 			}
 
-			toolName := "<unknown>"
-
-			if e.Data.ToolName != nil { // have yet to see the tool name NOT be filled in, but being defensive.
-				toolName = *e.Data.ToolName
+			toolName := data.ToolName
+			if toolName == "" {
+				toolName = "<unknown>"
 			}
 
-			tools[*e.Data.ToolCallID] = &tool{
+			tools[data.ToolCallID] = &tool{
 				Start:     e.Timestamp,
 				Name:      toolName,
 				Arguments: *ta,
 			}
-		case copilot.ToolExecutionComplete:
-			if e.Data.ToolCallID != nil {
-				t, exists := tools[*e.Data.ToolCallID]
-
-				if !exists { // _shouldn't_ happen, but we'll be defensive
-					continue
-				}
-
-				t.End = e.Timestamp
-
-				if e.Data.Success != nil {
-					t.Success = *e.Data.Success
-				}
-			}
-		case copilot.AssistantMessage:
-			if e.Data.Content != nil {
-				responses.WriteString(*e.Data.Content)
-			}
-		case copilot.AssistantMessageDelta:
-			if e.Data.DeltaContent != nil {
-				responses.WriteString(*e.Data.DeltaContent)
-			}
-		case copilot.SkillInvoked:
-			name := e.Data.Name
-
-			if name == nil {
-				name = new("<no skill name>")
+		case copilot.SessionEventTypeToolExecutionComplete:
+			data, ok := e.Data.(*copilot.ToolExecutionCompleteData)
+			if !ok || data.ToolCallID == "" {
+				continue
 			}
 
-			path := e.Data.Path
-			if path == nil {
-				path = new("<no path>")
+			t, exists := tools[data.ToolCallID]
+			if !exists { // _shouldn't_ happen, but we'll be defensive
+				continue
+			}
+
+			t.End = e.Timestamp
+			t.Success = data.Success
+		case copilot.SessionEventTypeAssistantMessage:
+			if data, ok := e.Data.(*copilot.AssistantMessageData); ok {
+				responses.WriteString(data.Content)
+			}
+		case copilot.SessionEventTypeAssistantMessageDelta:
+			if data, ok := e.Data.(*copilot.AssistantMessageDeltaData); ok {
+				responses.WriteString(data.DeltaContent)
+			}
+		case copilot.SessionEventTypeSkillInvoked:
+			data, ok := e.Data.(*copilot.SkillInvokedData)
+			if !ok {
+				continue
+			}
+
+			name := data.Name
+			if name == "" {
+				name = "<no skill name>"
+			}
+
+			path := data.Path
+			if path == "" {
+				path = "<no path>"
 			}
 
 			skills = append(skills, skill{
-				Name: *name,
-				Path: *path,
+				Name: name,
+				Path: path,
 			})
 		}
 	}
