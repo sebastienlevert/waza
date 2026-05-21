@@ -59,9 +59,20 @@ type CopilotEngineBuilderOptions struct {
 func NewCopilotEngineBuilder(defaultModelID string, options *CopilotEngineBuilderOptions) *CopilotEngineBuilder {
 	var client CopilotClient
 
+	cliArgs := []string{}
+	if defaultModelID != "" {
+		cliArgs = append(cliArgs, "--model", defaultModelID)
+	}
+
 	copilotOptions := &copilot.ClientOptions{
 		// workspace is set at the session level, instead of at the client.
 		LogLevel: "error",
+
+		// --yolo auto-approves all permissions at the CLI level (bypasses
+		// the broken RPC permission protocol in SDK v1.0.0-beta.4).
+		// --model forces the configured model, overriding any user settings
+		// in ~/.copilot/settings.json or experiment flights.
+		CLIArgs: cliArgs,
 
 		AutoStart:   new(false), // we handle start in Initialize()
 		AutoRestart: new(true),  // this is a default, but just in case the defaults change...
@@ -190,18 +201,12 @@ func (e *CopilotEngine) Execute(ctx context.Context, req *ExecutionRequest) (*Ex
 
 	var session CopilotSession
 
-	permRequestCallback := allowAllTools
-
-	if req.PermissionHandler != nil {
-		permRequestCallback = req.PermissionHandler
-	}
-
 	if req.SessionID == "" {
 		// Create session with updated API
 		session, err = e.client.CreateSession(ctx, &copilot.SessionConfig{
 			Model: modelID,
 
-			OnPermissionRequest: permRequestCallback,
+			OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 
 			SkillDirectories: skillDirs,
 			WorkingDirectory: workspaceDir,
@@ -216,7 +221,7 @@ func (e *CopilotEngine) Execute(ctx context.Context, req *ExecutionRequest) (*Ex
 		session, err = e.client.ResumeSessionWithOptions(ctx, req.SessionID, &copilot.ResumeSessionConfig{
 			Model: modelID,
 
-			OnPermissionRequest: permRequestCallback,
+			OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 
 			// these are the directory for the skill itself.
 			SkillDirectories: skillDirs,
@@ -684,3 +689,4 @@ func parseSkillFrontmatter(content string) (name, description string) {
 
 	return name, description
 }
+

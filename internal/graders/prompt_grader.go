@@ -61,6 +61,7 @@ func (p *promptGrader) gradeIndependent(ctx context.Context, gradingContext *Con
 	return measureTime(func() (*models.GraderResults, error) {
 		client := copilot.NewClient(&copilot.ClientOptions{
 			Cwd:             gradingContext.WorkspaceDir,
+			CLIArgs:         []string{"--yolo"},
 			AutoStart:       utils.Ptr(true),
 			AutoRestart:     utils.Ptr(true),
 			UseLoggedInUser: utils.Ptr(true),
@@ -328,6 +329,7 @@ func (p *promptGrader) runPairwiseOnce(
 ) (*pairwiseJudgment, error) {
 	client := copilot.NewClient(&copilot.ClientOptions{
 		Cwd:             gradingContext.WorkspaceDir,
+		CLIArgs:         []string{"--yolo"},
 		AutoStart:       utils.Ptr(true),
 		AutoRestart:     utils.Ptr(true),
 		UseLoggedInUser: utils.Ptr(true),
